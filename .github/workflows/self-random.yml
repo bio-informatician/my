@@ -1,0 +1,81 @@
+name: Self Random Scheduler
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # initial trigger at midnight
+  workflow_dispatch:
+
+permissions:
+  contents: write   # REQUIRED to commit changes
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install rndm
+        run: pip3 install rndm
+
+      # --- Toggle pip package ---
+      - name: Toggle rndm package
+        run: |
+          if pip3 show rndm >/dev/null 2>&1; then
+            pip3 uninstall rndm -y
+          else
+            pip3 install rndm
+          fi
+
+      # --- Generate next hour ---
+      - name: Generate next random hour
+        id: next
+        run: |
+          python3 - << 'EOF'
+          import rndm
+          import random
+          from datetime import datetime
+
+          now = datetime.utcnow().hour
+
+          if now == 0:
+              # first run of day → pick 1–23
+              next_hour = random.randint(1, 23)
+          else:
+              remaining = list(range(now+1, 24))
+              if not remaining:
+                  next_hour = 0  # fallback to next day midnight
+              else:
+                  next_hour = random.choice(remaining)
+
+          print(next_hour)
+
+          with open("next_hour.txt", "w") as f:
+              f.write(str(next_hour))
+          EOF
+
+          echo "hour=$(cat next_hour.txt)" >> $GITHUB_OUTPUT
+
+      # --- Rewrite workflow ---
+      - name: Update cron schedule
+        run: |
+          HOUR=${{ steps.next.outputs.hour }}
+
+          echo "Next run at hour: $HOUR"
+
+          sed -i "s/cron: .*/cron: \"0 ${HOUR} * * *\"/" .github/workflows/self-random.yml
+
+      - name: Commit updated workflow
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git add .github/workflows/self-random.yml
+          git commit -m "Update cron to hour ${{ steps.next.outputs.hour }}" || echo "No changes"
+          git push
