@@ -2,11 +2,11 @@ name: Self Random Scheduler
 
 on:
   schedule:
-    - cron: "0 0 * * *"   # initial trigger at midnight
+    - cron: "0 0 * * *" # starts at 00:00 UTC, then rewrites itself
   workflow_dispatch:
 
 permissions:
-  contents: write   # REQUIRED to commit changes
+  contents: write
 
 jobs:
   run:
@@ -19,63 +19,73 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
 
-      - name: Install rndm
-        run: pip3 install rndm
-
-      # --- Toggle pip package ---
-      - name: Toggle rndm package
+      - name: Create scheduler venv and install rndm
         run: |
-          if pip3 show rndm >/dev/null 2>&1; then
-            pip3 uninstall rndm -y
-          else
-            pip3 install rndm
-          fi
+          python -m venv .scheduler-venv
+          . .scheduler-venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install rndm
 
-      # --- Generate next hour ---
       - name: Generate next random hour
         id: next
         run: |
-          python3 - << 'EOF'
+          . .scheduler-venv/bin/activate
+          python - << 'EOF'
           import rndm
-          import random
-          from datetime import datetime
+          from datetime import datetime, timezone
 
-          now = datetime.utcnow().hour
+          now = datetime.now(timezone.utc).hour
 
           if now == 0:
-              # first run of day → pick 1–23
-              next_hour = random.randint(1, 23)
+              # first run of the day: choose 1..23
+              next_hour = rndm.time_based_random(1, 23)
           else:
-              remaining = list(range(now+1, 24))
-              if not remaining:
-                  next_hour = 0  # fallback to next day midnight
+              remaining_hours = 23 - now
+              if remaining_hours <= 0:
+                  # no hours left today -> next trigger at next midnight
+                  next_hour = 0
               else:
-                  next_hour = random.choice(remaining)
-
-          print(next_hour)
+                  # choose an offset within remaining hours, then add to current hour
+                  offset = rndm.time_based_random(1, remaining_hours)
+                  next_hour = now + offset
 
           with open("next_hour.txt", "w") as f:
               f.write(str(next_hour))
+
+          print(f"Current UTC hour: {now}")
+          print(f"Next UTC hour: {next_hour}")
           EOF
 
-          echo "hour=$(cat next_hour.txt)" >> $GITHUB_OUTPUT
+          echo "hour=$(cat next_hour.txt)" >> "$GITHUB_OUTPUT"
 
-      # --- Rewrite workflow ---
-      - name: Update cron schedule
+      - name: Run pip commands
         run: |
-          HOUR=${{ steps.next.outputs.hour }}
+          if python -m pip show rndm > /dev/null 2>&1; then
+            echo "rndm exists -> uninstalling"
+            python -m pip uninstall rndm -y
+          else
+            echo "rndm does not exist -> installing"
+            python -m pip install rndm
+          fi
 
-          echo "Next run at hour: $HOUR"
-
-          sed -i "s/cron: .*/cron: \"0 ${HOUR} * * *\"/" .github/workflows/self-random.yml
-
-      - name: Commit updated workflow
+      - name: Rewrite workflow cron
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
+          NEXT_HOUR="${{ steps.next.outputs.hour }}"
+          sed -i -E 's#cron: "0 [0-9]+ \* \* \*"#cron: "0 '"$NEXT_HOUR"' * * *"#' .github/workflows/self-random.yml
+          echo "Workflow updated to run at UTC hour $NEXT_HOUR"
+
+      - name: Commit and push updated workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add .github/workflows/self-random.yml
-          git commit -m "Update cron to hour ${{ steps.next.outputs.hour }}" || echo "No changes"
-          git push
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update next run hour to ${{ steps.next.outputs.hour }} UTC"
+            git push
+          fi
