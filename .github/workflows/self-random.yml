@@ -1,8 +1,6 @@
 name: Self Random Scheduler
 
 on:
-  schedule:
-    - cron: "0 0 * * *"
   workflow_dispatch:
 
 permissions:
@@ -23,42 +21,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Create scheduler venv and install rndm
-        run: |
-          python -m venv .scheduler-venv
-          . .scheduler-venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install rndm
-
-      - name: Generate next random hour
-        id: next
-        run: |
-          . .scheduler-venv/bin/activate
-          python - << 'EOF'
-          import rndm
-          from datetime import datetime, timezone
-
-          now = datetime.now(timezone.utc).hour
-
-          if now == 0:
-              next_hour = rndm.time_based_random(1, 23)
-          else:
-              remaining_hours = 23 - now
-              if remaining_hours <= 0:
-                  next_hour = 0
-              else:
-                  offset = rndm.time_based_random(1, remaining_hours)
-                  next_hour = now + offset
-
-          with open("next_hour.txt", "w") as f:
-              f.write(str(next_hour))
-
-          print(f"Current UTC hour: {now}")
-          print(f"Next UTC hour: {next_hour}")
-          EOF
-
-          echo "hour=$(cat next_hour.txt)" >> "$GITHUB_OUTPUT"
-
       - name: Run pip commands
         run: |
           if python -m pip show rndm > /dev/null 2>&1; then
@@ -71,7 +33,7 @@ jobs:
 
       - name: Rewrite workflow cron
         run: |
-          NEXT_HOUR="${{ steps.next.outputs.hour }}"
+          NEXT_HOUR="PUT_NEXT_HOUR_HERE"
           sed -i -E 's#cron: "0 [0-9]+ \* \* \*"#cron: "0 '"$NEXT_HOUR"' * * *"#' .github/workflows/self-random.yml
           echo "Workflow updated to run at UTC hour $NEXT_HOUR"
 
@@ -87,6 +49,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update next run hour to ${{ steps.next.outputs.hour }} UTC"
+            git commit -m "Update next run hour manually"
             git push origin HEAD:${GITHUB_REF_NAME}
           fi
